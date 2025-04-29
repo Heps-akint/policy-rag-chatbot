@@ -1,0 +1,17 @@
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88        # keep Black + Ruff in sync
+select = ["ALL"]        # enable every rule
+ignore = ["D203","D212"]# example: clashy docstring rules
+fix = true              # allow `ruff --fix`
+target-version = "py311"
+
+# optional: enforce import ordering via Ruff
+[tool.ruff.format]      # Ruff formatter (v0.0.289+)
+quote-style = "double"
+
+[tool.ruff.lint.isort]  # isort-compatible import sorter
+known-first-party = ["src"]

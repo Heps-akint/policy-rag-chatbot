@@ -1,0 +1,15 @@
+# .pre-commit-config.yaml  (root of repo)
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.7        # pin to an exact tag
+    hooks:
+      - id: ruff                # lint only
+      - id: ruff                # same hook, but auto-fix
+        name: ruff-fix
+        args: [--fix]
+      - id: ruff-format         # Ruff’s formatter
+
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black               # code formatter
