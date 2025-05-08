@@ -1,0 +1,6 @@
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+torchaudio==2.5.1+cu121
+optimum[gptq]>=1.24.0
+gptqmodel>=2.2.0
+huggingface_hub[cli]>=0.31.0

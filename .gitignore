@@ -1,4 +1,8 @@
 # .gitignore
 # vector store (rebuilt deterministically)
-.storage/
-.qdrant/
+storage/
+qdrant/
+test.py
+models/
+# smoke_mistral.py
+AutoGPTQ/
