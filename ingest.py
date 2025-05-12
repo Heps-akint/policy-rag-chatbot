@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 """
+Chunk → embed → persist pipeline used by `make ingest`.
+
 Document -> Chunk -> Embed pipeline.
 
 Reads all PDFs in a directory, splits them into sentence-preserving chunks,
@@ -7,14 +9,12 @@ embeds each chunk with a local **E5-large** encoder, and persists the vectors
 plus metadata into an in-process Qdrant collection.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # Ruff F404: must come first
 
 import argparse
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-import torch
 from llama_index.core import (
     SimpleDirectoryReader,
     StorageContext,
@@ -24,10 +24,6 @@ from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
-from transformers import AutoModel, AutoTokenizer
-
-if TYPE_CHECKING:
-    import numpy as np
 
 # ---------------------------------------------------------------------------
 # Configuration constants
@@ -41,8 +37,8 @@ COLLECTION: str = "policies"  # Qdrant collection name
 EMBED_MODEL = HuggingFaceEmbedding(model_name="intfloat/e5-large")
 
 # Structured logging
-logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 LOGGER = logging.getLogger(__name__)
+logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 
 # ---------------------------------------------------------------------------
 # Core pipeline
@@ -67,30 +63,8 @@ def build_index(pdf_dir: Path) -> int:
     splitter = SentenceSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=OVERLAP)
     nodes = splitter.get_nodes_from_documents(docs)
 
-    # 3. Local embedding backbone (kept for reference — *EMBED_MODEL* is used)
-    tokenizer = AutoTokenizer.from_pretrained("intfloat/e5-large")
-    model = AutoModel.from_pretrained("intfloat/e5-large")
-    model.eval()
-
-    def _embed(texts: list[str]) -> np.ndarray:
-        """Return NumPy vectors for *texts* using mean-pooling."""
-        import numpy as np  # local import satisfies Ruff TC002
-
-        with torch.no_grad():
-            encoded = tokenizer(
-                texts,
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-            )
-            last_hidden = model(**encoded).last_hidden_state  # (B, T, D)
-            masked = last_hidden * encoded["attention_mask"][..., None]
-            summed = masked.sum(1)
-            counts = encoded["attention_mask"].sum(1, keepdim=True)
-            return (summed / counts).cpu().numpy().astype(np.float32)
-
     # 4. Vector store - in-process Qdrant (swap to host/port for server mode)
-    qdrant = QdrantClient(path=":memory:")
+    qdrant = QdrantClient(path="qdrant_db")
     vstore = QdrantVectorStore(client=qdrant, collection_name=COLLECTION)
     storage = StorageContext.from_defaults(vector_store=vstore)
 

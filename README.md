@@ -73,3 +73,50 @@ python smoke_mistral.py models/mistral/gptq -- --bench
 ---
 
 Phase 4 is now complete; proceed to **Phase 5 – RAG chain wiring**.
+
+---
+
+### Phase 5 – RAG Chain Wiring & Source‑Grounded QA
+
+> *Goal:* stitch the vector store, retriever, local Mistral‑7B‑GPTQ, and a robust prompt into an end‑to‑end chatbot that answers with **one concise paragraph and inline citations**.
+
+#### 0  File layout
+
+```
+rag_chain.py          # main CLI entry‑point
+models/mistral/gptq/  # 4‑bit weights (Phase 4)
+qdrant_db/            # persisted vectors (Phase 3)
+```
+
+#### 1  Run a smoke test
+
+```bash
+py -3.11 rag_chain.py --question "What is the dress code?"
+```
+
+* First call streams the model to GPU (≈ 3 s); subsequent calls complete in < 1 s.
+* Output example:
+
+```
+Smart‑casual attire is required for on‑site work. [Dress_Code_Guide_2025]
+```
+
+#### 2  Implementation notes
+
+* `VectorStoreIndex.from_vector_store()` re‑attaches the persisted Qdrant collection.
+* Embeddings reuse *intfloat/e5‑large‑v2* to guarantee retriever/ingest parity.
+* Retrieval: `index.as_retriever(similarity_top_k=2)`—tune *top\_k* for recall ↔ noise.
+* Prompt enforces grounded answers and an “I don’t know” refusal when context is missing.
+* `index.as_query_engine(response_mode="compact")` builds a full `RetrieverQueryEngine` in one line.
+* The LLM is loaded through `HuggingFaceLLM` with `trust_remote_code=True` for ExLlama‑V2 kernels.
+* Quantised weights follow the GPTQ spec shipped in **optimum\[gptq]**.
+
+#### 3  Troubleshooting cheatsheet
+
+| Symptom                             | Likely cause                      | Fix                                                                  |
+| ----------------------------------- | --------------------------------- | -------------------------------------------------------------------- |
+| Answer is “I don’t know”            | PDF missing or chunk too large    | Add PDF and re‑run `make ingest`, or lower `CHUNK_SIZE`.             |
+| Output includes entire FAQ sections | Retriever pulled multi‑Q chunks   | Lower `similarity_top_k`, shrink `CHUNK_SIZE`, or refine the prompt. |
+| CUDA OOM on 4‑GB GPU                | Not enough vRAM for 4‑bit weights | Use CPU fallback (`device_map="cpu"`) or a 2‑bit GPTQ checkpoint.    |
+
+Phase 5 completes the end‑to‑end prototype. Next up: evaluation metrics, Dockerfile, and CI smoke tests.
