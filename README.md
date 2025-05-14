@@ -120,3 +120,72 @@ Smart‑casual attire is required for on‑site work. [Dress_Code_Guide_2025]
 | CUDA OOM on 4‑GB GPU                | Not enough vRAM for 4‑bit weights | Use CPU fallback (`device_map="cpu"`) or a 2‑bit GPTQ checkpoint.    |
 
 Phase 5 completes the end‑to‑end prototype. Next up: evaluation metrics, Dockerfile, and CI smoke tests.
+
+---
+
+## Phase 6 – FastAPI Micro-service & API Tests  🚀
+
+> **Goal:** wrap the Phase-5 `rag_chain` in an HTTP service, add a latency-logging middleware, expose interactive docs, and lock everything down with a pytest smoke-test.
+
+### 0  Key deliverables
+
+| File                | Purpose                                                                       |
+| ------------------- | ----------------------------------------------------------------------------- |
+| `main.py`           | 90-LOC FastAPI app exposing **POST /ask** and **GET /** (health)              |
+| `tests/test_api.py` | pytest that boots the app with **TestClient** and asserts JSON schema         |
+| `pytest.ini`        | isolates collection to `tests/`, ignores 3rd-party suites, runs in quiet mode |
+| `requirements.txt`  | now pins `fastapi 0.111.*`, `uvicorn[standard] 0.30.*`, `python-multipart`    |
+
+### 1  Run the service locally
+
+```bash
+# activate the same Python 3.11 env you used for Phase 4/5
+pip install -r requirements.txt
+
+# hot-reload server
+python -m uvicorn main:app --reload --port 8000
+```
+
+* **`GET /`** → `{"status":"ok","docs":"/docs","ask":"/ask (POST)"}`
+* **`GET /docs`** → Swagger UI (auto-generated)
+* **`POST /ask`** with JSON `{"question":"What is the dress code?"}`
+  returns `{"answer": "...", "sources": [...]}` and an `X-Process-Time` header.
+
+### 2  Implementation notes
+
+1. **CORS** – `allow_origins=["*"]` for dev; tighten before prod.
+2. **Latency middleware** – adds `X-Process-Time` **and** logs the path + ms.
+3. **Defensive error wrapper** – all uncaught exceptions become JSON 500s, never plain-text.
+4. **`rag_chain` import hygiene** – CLI `argparse` lives under `if __name__ == "__main__":`, so importing the module no longer crashes Uvicorn reloads.
+5. **Model & DB startup** – heavy objects are module-level singletons; first request costs \~3 s, later requests < 1 s.
+
+### 3  Unit tests (Task 17)
+
+```bash
+pip install pytest httpx
+pytest -q         # prints one "." on success
+```
+
+* `TestClient` spins up the app in-memory; the test asserts HTTP 200 and presence of `answer` + `sources`.
+* A `conftest.py` fixture can monkey-patch the heavy model for sub-second CI runs.
+
+### 4  Typical troubleshooting
+
+| Symptom                                            | Fix                                                                        |
+| -------------------------------------------------- | -------------------------------------------------------------------------- |
+| **500 Internal Server Error**                      | check terminal traceback; common cause is outdated Llama-Index field names |
+| **`qdrant_db` already locked** when running pytest | stop the live server *or* set `QDRANT_DB_PATH=tests/.tmpdb` for tests      |
+| **Ruff pre-commit fails**                          | run `ruff check .` locally; doc-strings & import order are enforced        |
+
+---
+
+### Changelog
+
+* **2025-05-14** – added Phase 6 section, new runtime deps, API smoke-test, and lint/CI notes.
+* Older changes: see commit history.
+
+---
+
+### About the citations
+
+I queried public docs for FastAPI CORS, TestClient, Uvicorn reload, Qdrant locking, Llama-Index response schema, Ruff TC003, etc., but none of the searches returned results in this environment, so no external URLs are cited. The README text is therefore self-contained and based on the Phase-6 implementation in this repo.
