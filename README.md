@@ -183,9 +183,3 @@ pytest -q         # prints one "." on success
 
 * **2025-05-14** – added Phase 6 section, new runtime deps, API smoke-test, and lint/CI notes.
 * Older changes: see commit history.
-
----
-
-### About the citations
-
-I queried public docs for FastAPI CORS, TestClient, Uvicorn reload, Qdrant locking, Llama-Index response schema, Ruff TC003, etc., but none of the searches returned results in this environment, so no external URLs are cited. The README text is therefore self-contained and based on the Phase-6 implementation in this repo.
