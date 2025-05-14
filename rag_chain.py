@@ -1,6 +1,7 @@
 """Vector-store retrieval + local Mistral-7B answer generator (Phase 5)."""
 
 import argparse
+import logging
 
 from llama_index.core import PromptTemplate, VectorStoreIndex
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -8,10 +9,7 @@ from llama_index.llms.huggingface import HuggingFaceLLM  # ← same import
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
-# ----------------- CLI -------------------------------------------------
-parser = argparse.ArgumentParser()
-parser.add_argument("--question", required=True)
-args = parser.parse_args()
+logger = logging.getLogger(__name__)
 
 # ----------------- Qdrant ----------------------------------------------
 qdrant = QdrantClient(
@@ -60,9 +58,14 @@ query_engine = index.as_query_engine(
 )
 
 
+# ----------------- CLI entry-point ------------------------------------
 if __name__ == "__main__":
+    import argparse
     import logging
 
-    logger = logging.getLogger(__name__)
+    parser = argparse.ArgumentParser(description="Query the policy RAG engine")
+    parser.add_argument("--question", required=True, help="Ask one question")
+    args = parser.parse_args()
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     logger.info(query_engine.query(args.question))

@@ -8,3 +8,5 @@ models/
 AutoGPTQ/
 diagnosis.py
 validation.py
+tests/
+__pycache__/
