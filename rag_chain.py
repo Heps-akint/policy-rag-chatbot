@@ -3,11 +3,12 @@
 import argparse
 import logging
 
+from langchain_huggingface import HuggingFacePipeline
 from llama_index.core import PromptTemplate, VectorStoreIndex
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.llms.huggingface import HuggingFaceLLM  # ← same import
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
+from transformers import pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +22,9 @@ vstore = QdrantVectorStore(
 )  # must match ingest.py :contentReference[oaicite:3]{index=3}
 
 # ---- Embedding (unchanged) ---------------------------------------------
-embed_model = HuggingFaceEmbedding("intfloat/e5-large-v2", device="cuda")
+embed_model = HuggingFaceEmbedding("intfloat/e5-large", device="cuda")
 index = VectorStoreIndex.from_vector_store(vstore, embed_model=embed_model)
-retriever = index.as_retriever(similarity_top_k=2)
+retriever = index.as_retriever(similarity_top_k=4)
 retriever.embedding_model = embed_model
 
 # ----------------- Prompt template -------------------------------------
@@ -31,22 +32,45 @@ SYSTEM = (
     "You are the company policy assistant. "
     "Answer clearly and cite the source title in square brackets."
 )
+
+
 TEMPLATE = PromptTemplate(
-    "You are a policy assistant. Use ONLY the information in {context_str} "
-    "to answer the single question below. If the answer is not there, say "
-    '"I don\'t know".\n\nQuestion: {query_str}\n\nAnswer (cite source):',
+    (
+        "You are the company-policy assistant for internal employees.\n\n"
+        "Context you may rely on:\n"
+        "{context_str}\n\n"
+        "Guidelines **(follow every time)**:\n"
+        "• Use *only* the context above. If the context lacks the answer, "
+        'reply exactly: "I don\'t know".\n'
+        "• If asked for professional legal, medical, financial, or therapeutic "
+        "advice, reply with:\n"
+        "  \"I'm sorry, but I can't provide that.\" (nothing more).\n"
+        "• Keep the answer to one clear paragraph.\n"
+        "• After each claim, cite the source file name in square brackets "
+        "(e.g. [boeing_conduct_guidelines]).\n\n"
+        "Question: {query_str}\n\n"
+        "Answer:"
+    ),
 )
 
 
 # ----------------- Local Mistral-7B (no more from_pretrained) ----------
-llm = HuggingFaceLLM(
-    model_name="./models/mistral/gptq",  # local weights
-    tokenizer_name="./models/mistral/gptq",
-    model_kwargs={"trust_remote_code": True},
-    device_map="auto",
+gen_pipe = pipeline(
+    "text-generation",
+    model="./models/mistral/gptq",
+    tokenizer="./models/mistral/gptq",
+    device_map="auto",  # <= plays nicely with Accelerate
     max_new_tokens=512,
-    context_window=4096,
+    trust_remote_code=True,
+    return_full_text=False,
+    do_sample=True,
+    temperature=0.7,
 )
+
+llm = HuggingFacePipeline(pipeline=gen_pipe)
+
+# expose both for reuse ↓↓↓
+__all__ = ["llm", "query_engine"]
 
 # ---- Query-engine *without* extra retriever --------------------------------
 query_engine = index.as_query_engine(
@@ -54,7 +78,7 @@ query_engine = index.as_query_engine(
     text_qa_template=TEMPLATE,
     system_prompt=SYSTEM,
     response_mode="compact",  # optional: strips raw context from output
-    similarity_top_k=2,  # OK because we're not passing retriever
+    similarity_top_k=4,  # OK because we're not passing retriever
 )
 
 

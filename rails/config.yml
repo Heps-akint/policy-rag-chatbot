@@ -1,0 +1,11 @@
+# rails/config.yml
+models:
+  - type: main
+    engine: custom
+    model: local-mistral
+
+extensions:
+  enabled:
+    - flows        # good – turns off stock extensions
+general_instructions: |
+  Always answer with **one concise paragraph** followed by a line: [Sources].

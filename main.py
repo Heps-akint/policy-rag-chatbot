@@ -7,12 +7,57 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
+import nest_asyncio
+from anyio import to_thread
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
-from rag_chain import query_engine
+# Guardrails-AI - `safe_text` output guard (Task 20)
+from guardrails import Guard
+from nemoguardrails import LLMRails, RailsConfig
+from pydantic import BaseModel
+from trulens.apps.llamaindex import TruLlama  # ✅ correct location
+from trulens_eval import Tru  # DB/session
+
+from rag_chain import (
+    llm as policy_llm,
+)
+from rag_chain import (
+    query_engine,  # ← reuse
+)
+
+# Apply event-loop patch *after* all imports to avoid E402
+nest_asyncio.apply()
+
+SAFE_TEXT_RAIL = """
+<rail version="0.1">
+  <output>
+    <string name="response"/>
+  </output>
+  <validators>
+    <SafeText/>           <!-- blocks medical / legal advice, illicit content, etc. -->
+  </validators>
+</rail>
+"""
+safe_guard = Guard.from_rail_string(SAFE_TEXT_RAIL)
+
+
+# --- build a simple text-to-text wrapper once --------------------------
+def rag_answer(question: str) -> str:
+    """Return ONLY the text answer (TruBasicApp needs str)."""
+    return query_engine.query(question).response  # no citations, just text
+
+
+tru = Tru()
+tru_recorder = TruLlama(  # 🚀 instruments Llama-Index for you
+    query_engine,
+    app_id="policy-rag",
+)
+
+rails_cfg = RailsConfig.from_path("rails")  # reads rails/config.yml
+rails = LLMRails(rails_cfg, llm=policy_llm)  # no second load!
+
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -43,15 +88,61 @@ class Question(BaseModel):  # D101
 
 @app.post("/ask")
 async def ask(payload: Question) -> JSONResponse:  # ANN201, D103
-    """Answer a single natural-language question with citations."""
+    """
+    Answer a natural-language question with citations.
+
+    Guarded by Guardrails-AI (`safe_text`) and logged by TruLens-Eval
+    (`with_record`).
+    """
     try:
-        resp = query_engine.query(payload.question)
-        answer = getattr(resp, "response", None) or str(resp)
+        # ── run the query once *inside* the TruLlama recorder ──
+        with tru_recorder as recording:  # ✅
+            resp = query_engine.query(payload.question)
+
+        raw_answer = resp.response  # plain text
+        _rec = recording  # store/use it
+
+        result = await to_thread.run_sync(safe_guard.validate, raw_answer)
+
+        # Pull the cleaned text, but be ready for None
+        validated = (
+            getattr(result, "validated_output", None)  # ≥ 0.4
+            or getattr(result, "output", None)  # 0.3.x
+            or (result if isinstance(result, str) else None)
+        )
+
+        # If Guardrails returned nothing, keep the original answer
+        if not validated:
+            validated = raw_answer
+
+        validated = validated.strip()
+        # If it passed, `validated` contains cleaned text; if it tripped, it raises.
+
+        # Finally run NeMo Guardrails for policy / tone checks.
+        guarded = await rails.generate_async(
+            messages=[{"role": "assistant", "content": validated}],
+        )
+
+        # 1️⃣ list of messages  → take last one
+        if isinstance(guarded, list) and guarded:
+            answer = str(guarded[-1].get("content", "")).strip()
+
+        # 2️⃣ single dict       → take its content
+        elif isinstance(guarded, dict):
+            answer = str(guarded.get("content", "")).strip()
+
+        # 3️⃣ raw string / None → cast to string
+        else:
+            answer = str(guarded or "").strip()
+
+        # Optional: if Guardrails returned an empty string, fall back to raw RAG answer
+        if not answer:
+            answer = raw_answer.strip()
 
         raw_sources = getattr(resp, "source_nodes", []) or []
         sources = [
             (getattr(node, "metadata", {}) or getattr(node, "node", {}).metadata).get(
-                "title",
+                "file_name",
                 "unknown",
             )
             for node in raw_sources
