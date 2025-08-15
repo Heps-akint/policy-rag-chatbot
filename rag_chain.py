@@ -21,8 +21,19 @@ vstore = QdrantVectorStore(
     collection_name="policies",
 )  # must match ingest.py :contentReference[oaicite:3]{index=3}
 
+# Ensure the 'policies' collection exists. If not, guide the user.
+try:
+    qdrant.get_collection(collection_name="policies")
+except Exception as e:
+    msg = (
+        "Qdrant collection 'policies' not found. Run `make ingest` "
+        "or `python ingest.py --pdf_dir data/raw` before starting the API."
+    )
+    raise RuntimeError(msg) from e
+
+
 # ---- Embedding (unchanged) ---------------------------------------------
-embed_model = HuggingFaceEmbedding("intfloat/e5-large", device="cuda")
+embed_model = HuggingFaceEmbedding("intfloat/e5-large", device="cpu")
 index = VectorStoreIndex.from_vector_store(vstore, embed_model=embed_model)
 retriever = index.as_retriever(similarity_top_k=4)
 retriever.embedding_model = embed_model

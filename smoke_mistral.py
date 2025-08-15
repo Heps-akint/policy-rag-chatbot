@@ -28,8 +28,9 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 # Default path: project_root/models/mistral/gptq
+# Use the repository root (the directory containing this file) rather than its parent.
 DEFAULT_MODEL_DIR = (
-    pathlib.Path(__file__).parent.parent / "models" / "mistral" / "gptq"
+    pathlib.Path(__file__).parent / "models" / "mistral" / "gptq"
 ).resolve()
 
 

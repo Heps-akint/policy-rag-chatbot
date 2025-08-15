@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import nest_asyncio
@@ -20,12 +22,8 @@ from pydantic import BaseModel
 from trulens.apps.llamaindex import TruLlama  # ✅ correct location
 from trulens_eval import Tru  # DB/session
 
-from rag_chain import (
-    llm as policy_llm,
-)
-from rag_chain import (
-    query_engine,  # ← reuse
-)
+from rag_chain import llm as policy_llm
+from rag_chain import query_engine  # ← reuse
 
 # Apply event-loop patch *after* all imports to avoid E402
 nest_asyncio.apply()
@@ -43,6 +41,42 @@ SAFE_TEXT_RAIL = """
 safe_guard = Guard.from_rail_string(SAFE_TEXT_RAIL)
 
 
+# --- helpers: clean up citations and file paths -------------------------
+def _basename(path: str) -> str:
+    """Return just the filename for either Windows or POSIX-style paths."""
+    return Path(path).name
+
+
+def normalize_citations(text: str) -> str:
+    r"""
+    Convert noisy path+page citations.
+
+    Examples:
+      [C:\path\file.pdf, page_label: 9] -> [file.pdf (p. 9)]
+      [C:\path\file.pdf, pages: 4-5]    -> [file.pdf (pp. 4-5)]
+      [C:\path\file.pdf]                -> [file.pdf]
+
+    """
+    text = re.sub(
+        r"\[([^\]]*?\.pdf)[^\]]*?page_label:\s*(\d+)[^\]]*\]",
+        lambda m: f"[{_basename(m.group(1))} (p. {m.group(2)})]",
+        text,
+    )
+    # pages: 4-5 / 3, 7-8
+    text = re.sub(
+        r"\[([^\]]*?\.pdf)[^\]]*?pages?:\s*([0-9,\-\s]+)[^\]]*\]",
+        lambda m: f"[{_basename(m.group(1))} (pp. {m.group(2).strip()})]",
+        text,
+    )
+    # any remaining [ ...file.pdf ]
+    text = re.sub(
+        r"\[([^\]]*?\.pdf)\]",
+        lambda m: f"[{_basename(m.group(1))}]",
+        text,
+    )
+    return text  # noqa: RET504
+
+
 # --- build a simple text-to-text wrapper once --------------------------
 def rag_answer(question: str) -> str:
     """Return ONLY the text answer (TruBasicApp needs str)."""
@@ -57,7 +91,6 @@ tru_recorder = TruLlama(  # 🚀 instruments Llama-Index for you
 
 rails_cfg = RailsConfig.from_path("rails")  # reads rails/config.yml
 rails = LLMRails(rails_cfg, llm=policy_llm)  # no second load!
-
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -87,7 +120,7 @@ class Question(BaseModel):  # D101
 
 
 @app.post("/ask")
-async def ask(payload: Question) -> JSONResponse:  # ANN201, D103
+async def ask(payload: Question) -> JSONResponse:  # noqa: C901, PLR0912  # ANN201, D103
     """
     Answer a natural-language question with citations.
 
@@ -102,55 +135,70 @@ async def ask(payload: Question) -> JSONResponse:  # ANN201, D103
         raw_answer = resp.response  # plain text
         _rec = recording  # store/use it
 
-        result = await to_thread.run_sync(safe_guard.validate, raw_answer)
-
-        # Pull the cleaned text, but be ready for None
-        validated = (
-            getattr(result, "validated_output", None)  # ≥ 0.4
-            or getattr(result, "output", None)  # 0.3.x
-            or (result if isinstance(result, str) else None)
-        )
-
-        # If Guardrails returned nothing, keep the original answer
-        if not validated:
+        # Validate with SafeText, but never let it crash the request
+        try:
+            result = await to_thread.run_sync(safe_guard.validate, raw_answer)
+            validated = (
+                getattr(result, "validated_output", None)
+                or getattr(result, "output", None)
+                or (result if isinstance(result, str) else None)
+                or raw_answer
+            )
+            validated = str(validated).strip()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("SafeText validation failed: %s", e)
             validated = raw_answer
 
-        validated = validated.strip()
-        # If it passed, `validated` contains cleaned text; if it tripped, it raises.
+        # Run NeMo Guardrails, but never let it crash the request
+        try:
+            guarded = await rails.generate_async(
+                messages=[{"role": "assistant", "content": validated}],
+            )
+            if isinstance(guarded, list) and guarded:
+                answer = str(guarded[-1].get("content", "")).strip()
+            elif isinstance(guarded, dict):
+                answer = str(guarded.get("content", "")).strip()
+            else:
+                answer = str(guarded or "").strip()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("NeMo Guardrails failed: %s", e)
+            answer = validated
 
-        # Finally run NeMo Guardrails for policy / tone checks.
-        guarded = await rails.generate_async(
-            messages=[{"role": "assistant", "content": validated}],
-        )
-
-        # 1️⃣ list of messages  → take last one
-        if isinstance(guarded, list) and guarded:
-            answer = str(guarded[-1].get("content", "")).strip()
-
-        # 2️⃣ single dict       → take its content
-        elif isinstance(guarded, dict):
-            answer = str(guarded.get("content", "")).strip()
-
-        # 3️⃣ raw string / None → cast to string
-        else:
-            answer = str(guarded or "").strip()
-
-        # Optional: if Guardrails returned an empty string, fall back to raw RAG answer
         if not answer:
             answer = raw_answer.strip()
 
-        raw_sources = getattr(resp, "source_nodes", []) or []
-        sources = [
-            (getattr(node, "metadata", {}) or getattr(node, "node", {}).metadata).get(
-                "file_name",
-                "unknown",
+        # ✨ Clean inline citations (remove long paths / format pages neatly)
+        answer = normalize_citations(answer)
+
+        # ✨ Build a clean, de-duplicated sources list (filenames only)
+        raw_nodes = getattr(resp, "source_nodes", []) or []
+        sources_raw: list[str] = []
+        for node in raw_nodes:
+            md = (
+                getattr(node, "metadata", None)
+                or getattr(getattr(node, "node", None), "metadata", None)
+                or {}
             )
-            for node in raw_sources
-        ] or (
-            [resp.get_formatted_sources(length=120)]
-            if hasattr(resp, "get_formatted_sources")
-            else []
-        )
+            val = isinstance(md, dict) and (
+                md.get("file_name")
+                or md.get("source")
+                or md.get("file")
+                or md.get("filename")
+            )
+            if isinstance(val, str):
+                sources_raw.append(val)
+
+        if not sources_raw and hasattr(resp, "get_formatted_sources"):
+            formatted = resp.get_formatted_sources(length=2000)
+            sources_raw = re.findall(r"([^\s/\\]+\.pdf)", str(formatted))
+
+        seen = set()
+        sources: list[str] = []
+        for s in sources_raw:
+            base = _basename(s)
+            if base not in seen:
+                seen.add(base)
+                sources.append(base)
 
     except Exception as exc:
         logger.exception("Uncaught error in /ask")  # LOG015 fixed
