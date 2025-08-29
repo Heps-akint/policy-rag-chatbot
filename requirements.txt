@@ -7,3 +7,14 @@ huggingface_hub[cli]>=0.31.0
 fastapi==0.111.0
 uvicorn[standard]==0.30.0
 python-multipart==0.0.9
+transformers
+qdrant-client
+llama-index-core
+llama-index-embeddings-huggingface
+llama-index-vector-stores-qdrant
+langchain-huggingface
+trulens-eval
+guardrails-ai
+nemoguardrails
+nest-asyncio
+anyio

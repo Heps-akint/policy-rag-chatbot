@@ -106,12 +106,14 @@ Smart-casual attire is required for on-site work. [Dress_Code_Guide_2025]
 ### 2) Implementation notes
 
 * `VectorStoreIndex.from_vector_store()` re-attaches the persisted Qdrant collection.
-* Embeddings reuse *intfloat/e5-large-v2* to guarantee retriever/ingest parity.
+* Embeddings reuse *intfloat/e5-large* to guarantee retriever/ingest parity.
 * Retrieval: `index.as_retriever(similarity_top_k=2)`—tune *top\_k* for recall ↔ noise.
 * Prompt enforces grounded answers and an “I don’t know” refusal when context is missing.
 * `index.as_query_engine(response_mode="compact")` builds a full `RetrieverQueryEngine` in one line.
-* The LLM is loaded through `HuggingFaceLLM` with `trust_remote_code=True` for ExLlama-V2 kernels.
+* Retrieval: `index.as_query_engine(..., similarity_top_k=4)` — tune top_k for recall vs. noise.
+* The LLM is loaded via `transformers.pipeline` wrapped by `HuggingFacePipeline` (with `trust_remote_code=True` for ExLlama‑V2 kernels).
 * Quantised weights follow the GPTQ spec shipped in **optimum\[gptq]**.
+* API returns JSON with an `answer` string and a `sources` list (filenames) for the UI; guardrails may also add a `[Sources]` section in the text.
 
 ### 3) Troubleshooting cheatsheet
 
@@ -134,7 +136,7 @@ Smart-casual attire is required for on-site work. [Dress_Code_Guide_2025]
 | File                | Purpose                                                                       |
 | ------------------- | ----------------------------------------------------------------------------- |
 | `main.py`           | FastAPI app exposing **POST /ask** and **GET /** (health)                     |
-| `tests/test_api.py` | pytest that boots the app with **TestClient** and asserts JSON schema         |
+| `tests/` (optional) | add pytest-based smoke tests as needed; `pytest.ini` is preconfigured        |
 | `pytest.ini`        | isolates collection to `tests/`, ignores 3rd-party suites, runs in quiet mode |
 | `requirements.txt`  | pins `fastapi 0.111.*`, `uvicorn[standard] 0.30.*`, `python-multipart`        |
 
